@@ -1,0 +1,17 @@
+{
+  "name": "FoodLog \u2014 Daily Nutrition",
+  "short_name": "FoodLog",
+  "description": "A simple calorie and macro tracker.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f5f5ef",
+  "theme_color": "#315b45",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
