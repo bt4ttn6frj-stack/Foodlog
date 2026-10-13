@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="FoodLog">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
-<title>FoodLog — Daily nutrition</title>
+<title>FoodLog V6 — Daily nutrition</title>
 <style>
 :root{--bg:#f5f5ef;--card:#fff;--ink:#20251f;--muted:#6f776e;--green:#315b45;--green2:#e5eee5;--line:#e3e7df;--coral:#f4ddd5;--gold:#f2d7a4;--blue:#dce9f0;--shadow:0 8px 28px #223b2710}
 *{box-sizing:border-box}html{background:var(--bg)}body{margin:0;font-family:ui-rounded,"SF Pro Rounded",system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink);padding-bottom:calc(26px + env(safe-area-inset-bottom))}
@@ -87,6 +87,17 @@ button,input,select,textarea{font:inherit}button{cursor:pointer;border:0;border-
 </section>
 </div>
 
+<div class="panel" id="panel-recipes">
+<section class="card"><div class="head"><h2>My recipes</h2><span class="tiny">Ingredients → portions</span></div>
+<p class="hint">Type a recipe in one box. Example: <b>Dal: dry lentils 150g, onion 100g, tomato 150g, oil 15g, cumin 3g</b>. We match ingredients to built-in nutrition references and calculate the whole batch. No AI or ingredient-by-ingredient searching.</p>
+<label class="inputlabel" for="recipeText">Recipe and ingredients</label>
+<textarea id="recipeText" rows="5" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:12px;font:inherit" placeholder="Dal: dry lentils 150g, onion 100g, tomato 150g, oil 15g, turmeric 2g, cumin 3g"></textarea>
+<div class="controls"><button class="primary" id="calculateRecipe">Calculate recipe</button></div>
+<div id="recipeUnknown" class="status" aria-live="polite"></div>
+<div id="recipeBuilderItems"></div><div id="recipeBuilderTotals" class="status"></div>
+<div class="controls"><button class="primary" id="saveRecipe">Save recipe</button><button class="ghost" id="clearRecipe">Clear</button></div><div id="recipeStatus" class="status" aria-live="polite"></div>
+</section><section class="card"><h2>Saved recipes</h2><p class="hint">Select how much of the entire batch you ate, and choose the meal.</p><div id="recipeList"></div></section>
+</div>
 <div class="panel" id="panel-history">
 <section class="card">
 <div class="head"><h2>Recent days</h2><button class="soft" id="exportAllBtn">Export all CSV</button></div>
@@ -98,7 +109,7 @@ button,input,select,textarea{font:inherit}button{cursor:pointer;border:0;border-
 
 <nav class="nav" aria-label="Main navigation">
 <button class="active" data-panel="log">＋ Log food</button>
-<button data-panel="saved">♡ Saved meals</button>
+<button data-panel="saved">♡ Saved meals</button><button data-panel="recipes">♨ Recipes</button>
 <button data-panel="history">▦ History</button>
 </nav>
 <p class="footnote">Estimates only. Values use a small built-in reference list and typical portions; recipes, brands, cooking methods and added oils can substantially change nutrition. Foods that aren't recognised are flagged rather than silently assigned made-up values. Packaged-food barcode lookup uses Open Food Facts (© Open Food Facts contributors, ODbL). No paid AI API is connected.</p>
@@ -278,6 +289,8 @@ persist();renderAll();status.textContent="Added "+name+" to your diary.";
 let pending=[];
 $("addBtn").onclick=()=>{
  const input=$("foodInput").value.trim();if(!input){$("parseStatus").textContent="Enter a food or meal first.";return}
+ const recipeMatch=parseRecipeMeal(input);
+ if(recipeMatch){entries.unshift(recipeMatch.entry);persist();renderAll();$("foodInput").value="";$("parseStatus").textContent=`Logged ${Math.round(recipeMatch.fraction*100)}% of ${recipeMatch.entry.name} for ${recipeMatch.meal}. For other foods, add a separate entry.`;return}
  const result=parse(input);pending=result.found;
  if(!pending.length){$("parseStatus").textContent="I couldn't match that yet. Try a simpler food name or add it as a custom food."; $("reviewArea").innerHTML="";return}
  $("reviewArea").innerHTML=`<div class="divider"></div><div class="head"><h2>Check your estimate</h2><span class="tiny">${pending.length} item(s)</span></div>`+
@@ -326,6 +339,87 @@ function renderHistory(){
  if(!dates.length){$("historySummary").innerHTML='<div class="empty">Your logged days will appear here.</div>';return}
  $("historySummary").innerHTML=dates.map(d=>{const a=entries.filter(x=>x.date===d),k=a.reduce((s,x)=>s+x.k,0),p=a.reduce((s,x)=>s+x.p,0);return `<div class="foodrow"><div><div class="foodname">${new Date(d+"T12:00:00").toLocaleDateString(undefined,{weekday:"short",day:"numeric",month:"short"})}</div><div class="foodsub">${a.length} food entries · ${p.toFixed(1)} g protein</div></div><div class="foodright"><div class="foodkcal">${k} kcal</div></div></div>`}).join("");
 }
+// V6 text-only recipe builder. Ingredient reference values are per 100 g.
+let recipes=JSON.parse(localStorage.getItem("fl5-recipes")||"[]"),recipeDraft=[];
+const recipeSave=()=>localStorage.setItem("fl5-recipes",JSON.stringify(recipes));
+const recipeTotals=items=>items.reduce((t,i)=>{for(const k of ["k","p","c","f"])t[k]+=(Number(i[k])||0)*i.grams/100;return t},{k:0,p:0,c:0,f:0});
+const recipeNum=n=>Number(n).toFixed(1);
+// Values below are approximate typical raw/dry ingredients (except explicitly cooked entries).
+const ingredientRefs=[
+ ["dry lentils",["dry lentils","lentils dry","raw lentils","masoor dal dry","toor dal dry","moong dal dry","lentils","lentil","dal lentils"],353,25,60,1.1],
+ ["cooked lentils",["cooked lentils","boiled lentils"],116,9,20,.4],
+ ["onion",["onions","onion"],40,1.1,9.3,.1],
+ ["tomato",["tomatoes","tomato"],18,.9,3.9,.2],
+ ["olive oil",["olive oil"],884,0,0,100],
+ ["cooking oil",["vegetable oil","sunflower oil","rapeseed oil","canola oil","oil"],884,0,0,100],
+ ["ghee",["ghee"],900,0,0,100],
+ ["butter",["butter"],717,.9,.1,81],
+ ["turmeric",["turmeric","haldi"],312,9.7,67,3.3],
+ ["cumin",["cumin seeds","cumin","jeera"],375,18,44,22],
+ ["coriander powder",["coriander powder","ground coriander","dhania powder"],298,12,55,18],
+ ["ginger",["ginger","adrak"],80,1.8,18,.8],
+ ["garlic",["garlic","lehsun"],149,6.4,33,.5],
+ ["green chilli",["green chilli","green chili","chilli","chili"],40,2,9,.2],
+ ["salt",["salt"],0,0,0,0],
+ ["water",["water"],0,0,0,0],
+ ["dry rice",["uncooked rice","dry rice","raw rice","basmati rice"],365,7.1,80,.7],
+ ["cooked rice",["cooked rice","boiled rice"],130,2.7,28,.3],
+ ["paneer",["paneer"],265,18,4,20],
+ ["tofu",["firm tofu","tofu"],145,16,3,8.7],
+ ["potato",["potatoes","potato","aloo"],77,2,17,.1],
+ ["carrot",["carrots","carrot"],41,.9,9.6,.2],
+ ["peas",["green peas","peas","matar"],81,5.4,14.5,.4],
+ ["spinach",["spinach","palak"],23,2.9,3.6,.4],
+ ["capsicum",["bell pepper","capsicum","pepper"],26,1,6,.3],
+ ["chickpeas dry",["dry chickpeas","uncooked chickpeas","raw chickpeas"],364,19,61,6],
+ ["chickpeas cooked",["cooked chickpeas","boiled chickpeas","chickpeas","chana"],164,8.9,27.4,2.6],
+ ["red kidney beans dry",["dry kidney beans","uncooked rajma"],333,24,60,.8],
+ ["kidney beans cooked",["cooked kidney beans","kidney beans","rajma"],127,8.7,23,.5],
+ ["wheat flour",["whole wheat flour","atta","wheat flour","flour"],340,13,72,2.5],
+ ["yoghurt",["greek yoghurt","greek yogurt","yoghurt","yogurt","curd","dahi"],80,6,5,3],
+ ["milk",["whole milk","milk"],61,3.2,4.8,3.3],
+ ["cream",["double cream","heavy cream","cream"],340,2,3,36],
+ ["coconut milk",["coconut milk"],230,2.3,6,23],
+ ["sugar",["sugar"],387,0,100,0],
+ ["oats",["rolled oats","oats"],389,17,66,7],
+ ["broccoli",["broccoli"],34,2.8,7,.4],
+ ["mushroom",["mushrooms","mushroom"],22,3.1,3.3,.3],
+ ["cauliflower",["cauliflower","gobi"],25,1.9,5,.3]
+];
+function lookupIngredient(name){const n=norm(name);let matches=[];for(const ref of ingredientRefs)for(const alias of ref[1]){const a=norm(alias);if(n===a||n.includes(a)){matches.push({ref,alias:a});}}matches.sort((a,b)=>b.alias.length-a.alias.length);return matches[0]?.ref||null}
+function parseRecipeText(text){
+ const t=text.trim();let name="",body=t;const colon=t.indexOf(":");
+ if(colon>0&&colon<100){name=t.slice(0,colon).replace(/^recipe\s*/i,"").trim();body=t.slice(colon+1)}
+ const chunks=body.split(/[,;\n]+/).map(x=>x.trim()).filter(Boolean);
+ const items=[],unknown=[];
+ for(const chunk of chunks){
+  // Supports "lentils 150g", "150 g lentils", "oil 1 tbsp".
+  let m=chunk.match(/^(.+?)\s+(\d+(?:\.\d+)?)\s*(kg|g|grams?|ml|millilitres?|milliliters?|tbsp|tablespoons?|tsp|teaspoons?)\s*$/i);
+  let rawName,amount,unit;
+  if(m){rawName=m[1];amount=Number(m[2]);unit=m[3].toLowerCase()}
+  else{m=chunk.match(/^(\d+(?:\.\d+)?)\s*(kg|g|grams?|ml|millilitres?|milliliters?|tbsp|tablespoons?|tsp|teaspoons?)\s+(?:of\s+)?(.+)$/i);if(m){amount=Number(m[1]);unit=m[2].toLowerCase();rawName=m[3]}}
+  if(!m){unknown.push(chunk+" (include an amount in g or ml)");continue}
+  const ref=lookupIngredient(rawName);
+  if(!ref){unknown.push(chunk+" (ingredient not recognised)");continue}
+  if(unit==="kg")amount*=1000;
+  else if(unit.startsWith("tbsp")||unit.startsWith("tablespoon"))amount*=ref[0].includes("oil")||ref[0]==="ghee"?13.5:15;
+  else if(unit.startsWith("tsp")||unit.startsWith("teaspoon"))amount*=ref[0].includes("oil")||ref[0]==="ghee"?4.5:5;
+  // ml approximated as grams for liquids; density varies by product.
+  if(!(amount>0&&Number.isFinite(amount))||amount>50000){unknown.push(chunk+" (invalid amount)");continue}
+  items.push({name:ref[0],grams:amount,k:ref[2],p:ref[3],c:ref[4],f:ref[5]});
+ }
+ return {name,items,unknown};
+}
+function renderRecipeDraft(){const t=recipeTotals(recipeDraft);$("recipeBuilderItems").innerHTML=recipeDraft.map((x,i)=>`<div class="foodrow"><div><div class="foodname">${esc(x.name)} · ${x.grams}g</div><div class="foodsub">${recipeNum(x.k*x.grams/100)} kcal · P ${recipeNum(x.p*x.grams/100)}g · C ${recipeNum(x.c*x.grams/100)}g · F ${recipeNum(x.f*x.grams/100)}g</div></div></div>`).join("");$("recipeBuilderTotals").textContent=recipeDraft.length?`Whole batch: ${Math.round(t.k)} kcal · Protein ${recipeNum(t.p)}g · Carbs ${recipeNum(t.c)}g · Fat ${recipeNum(t.f)}g`:""}
+let recipeInvalid=false;
+$("calculateRecipe").onclick=()=>{const result=parseRecipeText($("recipeText").value);recipeDraft=result.items;recipeInvalid=result.unknown.length>0;$("recipeUnknown").textContent=result.unknown.length?"Not included: "+result.unknown.join("; ")+". Correct the text and recalculate before saving.":result.items.length?"All ingredients recognised. Check the estimates and save.":"Enter a recipe name followed by ingredients and gram quantities.";renderRecipeDraft();$("recipeStatus").textContent=""};
+$("saveRecipe").onclick=()=>{const parsed=parseRecipeText($("recipeText").value);if(!parsed.name){$("recipeStatus").textContent="Start with a name and colon, e.g. Dal: lentils 150g, onion 100g";return}if(!parsed.items.length||parsed.unknown.length){$("calculateRecipe").click();$("recipeStatus").textContent="Please correct all unrecognised ingredients before saving.";return}recipes.unshift({id:Date.now(),name:parsed.name,items:parsed.items});recipeSave();recipeDraft=[];$("recipeText").value="";$("recipeUnknown").textContent="";renderRecipeDraft();renderRecipes();$("recipeStatus").textContent=`Saved ${parsed.name}. You can now type “Lunch: half my ${parsed.name} recipe” in the meal diary.`};
+$("clearRecipe").onclick=()=>{recipeDraft=[];$("recipeText").value="";$("recipeUnknown").textContent="";renderRecipeDraft();$("recipeStatus").textContent="Cleared."};
+function renderRecipes(){if(!recipes.length){$("recipeList").innerHTML='<div class="empty">No recipes saved yet.</div>';return}$("recipeList").innerHTML=recipes.map((r,i)=>{const t=recipeTotals(r.items);return `<div class="foodrow" style="display:block"><div class="foodname">${esc(r.name)}</div><div class="foodsub">${r.items.length} ingredients · Whole batch: ${Math.round(t.k)} kcal · P ${recipeNum(t.p)}g · C ${recipeNum(t.c)}g · F ${recipeNum(t.f)}g</div><div class="controls"><label style="flex:1">Amount eaten<select id="recipeFraction${i}" style="width:100%"><option value="1">Whole recipe</option><option value="0.5" selected>Half (½)</option><option value="0.25">Quarter (¼)</option><option value="0.333333">Third (⅓)</option><option value="0.75">Three quarters (¾)</option><option value="custom">Custom fraction</option></select></label><label style="flex:1">Meal<select id="recipeMeal${i}" style="width:100%"><option>Lunch</option><option>Breakfast</option><option>Dinner</option><option>Snack</option></select></label></div><div class="controls"><button class="primary" onclick="logRecipe(${i})">＋ Log portion</button><button class="danger" onclick="deleteRecipe(${i})">Delete</button></div></div>`}).join("")}
+function makeRecipeEntry(r,fraction,meal){const t=recipeTotals(r.items);return {id:Date.now()+Math.floor(Math.random()*1000),date:today,meal,name:r.name,label:`${Math.round(fraction*100)}% of recipe ·`,k:Math.round(t.k*fraction),p:+(t.p*fraction).toFixed(1),c:+(t.c*fraction).toFixed(1),f:+(t.f*fraction).toFixed(1),source:"recipe"}}
+window.logRecipe=i=>{const r=recipes[i],sel=$("recipeFraction"+i).value;let fraction=sel==="custom"?Number(prompt("What fraction of the whole recipe did you eat? e.g. 0.4 for 40%")):Number(sel);if(!Number.isFinite(fraction)||fraction<=0||fraction>1){alert("Enter a fraction greater than 0 and up to 1.");return}const meal=$("recipeMeal"+i).value;entries.unshift(makeRecipeEntry(r,fraction,meal));persist();renderAll();showPanel("log");$("parseStatus").textContent=`Logged ${Math.round(fraction*100)}% of ${r.name} for ${meal}.`};
+window.deleteRecipe=i=>{if(!confirm(`Delete recipe “${recipes[i].name}”?`))return;recipes.splice(i,1);recipeSave();renderRecipes()};
+function parseRecipeMeal(input){let t=norm(input).replace(/\b(my|recipe|of|the|for|had|i|ate|a)\b/g," ").replace(/\s+/g," ").trim();const mealMatch=t.match(/^(breakfast|lunch|dinner|snack)\s*:?\s*/);let meal=mealMatch?mealMatch[1][0].toUpperCase()+mealMatch[1].slice(1):$("mealType").value;if(mealMatch)t=t.slice(mealMatch[0].length).trim();const recipesSorted=[...recipes].sort((a,b)=>b.name.length-a.name.length);const match=recipesSorted.find(r=>new RegExp("(^|\\s)"+norm(r.name).replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"(\\s|$)","i").test(t));if(!match)return null;let fraction=1;if(/\b(half|1\/2)\b/.test(t))fraction=.5;else if(/\b(quarter|1\/4)\b/.test(t))fraction=.25;else if(/\b(third|1\/3)\b/.test(t))fraction=1/3;else if(/\b(three quarters|3\/4)\b/.test(t))fraction=.75;else{const m=t.match(/\b(\d+(?:\.\d+)?)\s*%/);if(m)fraction=Number(m[1])/100}if(!(fraction>0&&fraction<=1))return null;return {entry:makeRecipeEntry(match,fraction,meal),meal,fraction}}
 function renderAll(){renderTotals();renderDiary();renderSaved();renderHistory()}
 function showPanel(name){document.querySelectorAll(".panel").forEach(p=>p.classList.toggle("active",p.id==="panel-"+name));document.querySelectorAll(".nav button").forEach(b=>b.classList.toggle("active",b.dataset.panel===name));window.scrollTo({top:0,behavior:"smooth"})}
 document.querySelectorAll(".nav button").forEach(b=>b.onclick=()=>showPanel(b.dataset.panel));
