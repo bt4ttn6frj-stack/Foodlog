@@ -101,8 +101,8 @@ button,input,select,textarea{font:inherit}button{cursor:pointer;border:0;border-
 <button data-panel="saved">♡ Saved meals</button>
 <button data-panel="history">▦ History</button>
 </nav>
-<p class="footnote">Estimates only. Values use a small built-in reference list and typical portions; recipes, brands, cooking methods and added oils can substantially change nutrition. Foods that aren't recognised are flagged rather than silently assigned made-up values. No AI API or paid service is connected in this version.</p>
-</main>
+<p class="footnote">Estimates only. Values use a small built-in reference list and typical portions; recipes, brands, cooking methods and added oils can substantially change nutrition. Foods that aren't recognised are flagged rather than silently assigned made-up values. Packaged-food barcode lookup uses Open Food Facts (© Open Food Facts contributors, ODbL). No paid AI API is connected.</p>
+<section class="card"><h2>Online packaged-food lookup</h2><p class="hint">Search packaged products by name or barcode using Open Food Facts. Select the correct product and enter grams eaten. Internet required; database entries may be incomplete.</p><input id="productQuery" placeholder="e.g. Fage Greek yoghurt or Weetabix" style="width:100%;padding:12px"><div class="controls"><button class="primary" id="searchProducts">Search products by name</button></div><div id="productResults" class="status"></div><input id="barcode" inputmode="numeric" placeholder="Enter product barcode" style="width:100%;padding:12px"><div class="controls"><button class="primary" id="lookup">Look up barcode</button></div><div id="lookupResult" class="status"></div></section></main>
 <script>
 const $=id=>document.getElementById(id);
 const todayKey=()=>{const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`};
@@ -217,6 +217,64 @@ function parse(text){
  }
  return {found,unknown};
 }
+
+// Product-name search via Open Food Facts legacy search endpoint. Product records are community contributed.
+function nutrition100(product){
+ const n=product.nutriments||{};
+ const vals=[n["energy-kcal_100g"],n["proteins_100g"],n["carbohydrates_100g"],n["fat_100g"]];
+ if(vals.some(v=>v===null||v===undefined||v===""||!Number.isFinite(Number(v))))return null;
+ const [k,p,c,f]=vals.map(Number);if([k,p,c,f].some(v=>v<0))return null;
+ return {k,p,c,f};
+}
+function logOnlineProduct(product,values,status){
+ const v=prompt("How many grams did you eat?", "100");if(v===null)return;
+ const g=Number(v);if(!Number.isFinite(g)||g<=0||g>10000){alert("Enter a valid amount in grams.");return}
+ const m=g/100, name=product.product_name||"Packaged food";
+ entries.unshift({name,label:g+" g",k:Math.round(values.k*m),p:+(values.p*m).toFixed(1),c:+(values.c*m).toFixed(1),f:+(values.f*m).toFixed(1),meal:$("mealType").value,source:"Open Food Facts",id:Date.now(),date:today});
+ persist();renderAll();status.textContent="Added "+name+" to your diary.";
+}
+$("searchProducts").onclick=async()=>{
+ const q=$("productQuery").value.trim(),status=$("productResults");
+ if(q.length<2){status.textContent="Enter at least two characters.";return}
+ status.textContent="Searching online nutrition database…";
+ try{
+  const url="https://world.openfoodfacts.org/cgi/search.pl?search_terms="+encodeURIComponent(q)+"&search_simple=1&action=process&json=1&page_size=20&fields=code,product_name,brands,nutriments";
+  const response=await fetch(url,{headers:{"Accept":"application/json"}});
+  if(!response.ok)throw Error("Search service unavailable");
+  const data=await response.json();
+  const products=(data.products||[]).filter(x=>x.product_name&&nutrition100(x)).slice(0,12);
+  if(!products.length){status.textContent="No products with complete calories and macros found. Try another name or barcode.";return}
+  status.innerHTML="<p class='hint'>Select the matching brand and product. Values are per 100 g.</p>"+products.map((x,i)=>{
+   const n=nutrition100(x);return `<div class="foodrow"><div><div class="foodname">${esc(x.product_name)}</div><div class="foodsub">${esc(x.brands||"Brand not listed")} · ${Math.round(n.k)} kcal · P ${n.p} g · C ${n.c} g · F ${n.f} g</div></div><button class="soft" data-product-index="${i}">Log</button></div>`;
+  }).join("");
+  status.querySelectorAll("[data-product-index]").forEach(btn=>btn.addEventListener("click",()=>{
+   const product=products[Number(btn.dataset.productIndex)];logOnlineProduct(product,nutrition100(product),status);
+  }));
+ }catch(e){status.textContent="Online search failed. Check your connection or try barcode lookup. "+e.message}
+};
+$("productQuery").addEventListener("keydown",e=>{if(e.key==="Enter")$("searchProducts").click()});
+$("lookup").onclick=async()=>{
+const b=$("barcode").value.trim(),status=$("lookupResult");
+if(!/^\d{8,14}$/.test(b)){status.textContent="Enter a barcode with 8–14 digits.";return}
+status.textContent="Looking up product…";
+try{
+const r=await fetch("https://world.openfoodfacts.org/api/v2/product/"+b+".json?fields=product_name,brands,nutriments");
+if(!r.ok)throw Error("Service unavailable");
+const d=await r.json(),n=d.product?.nutriments||{};
+if(d.status!==1)throw Error("Barcode not found");
+const k=Number(n["energy-kcal_100g"]),p=Number(n["proteins_100g"]),c=Number(n["carbohydrates_100g"]),f=Number(n["fat_100g"]);
+if([k,p,c,f].some(x=>!Number.isFinite(x))||n["energy-kcal_100g"]==null||n["proteins_100g"]==null||n["carbohydrates_100g"]==null||n["fat_100g"]==null)throw Error("Product has incomplete nutrition data");
+const name=d.product.product_name||"Packaged food";
+status.innerHTML=`${esc(name)} (${esc(d.product.brands||"")}) — ${k} kcal / 100 g · Protein ${p} g · Carbs ${c} g · Fat ${f} g <button class="soft" id="logLookup">Log portion</button>`;
+$("logLookup").onclick=()=>{
+const v=prompt("How many grams did you eat?","100");if(v===null)return;
+const g=Number(v);if(!Number.isFinite(g)||g<=0||g>10000){alert("Enter a valid amount in grams.");return}
+const m=g/100;entries.unshift({name,label:g+" g",k:Math.round(k*m),p:+(p*m).toFixed(1),c:+(c*m).toFixed(1),f:+(f*m).toFixed(1),meal:$("mealType").value,source:"Open Food Facts",id:Date.now(),date:today});
+persist();renderAll();status.textContent="Added "+name+" to your diary.";
+};
+}catch(e){status.textContent="Could not find usable nutrition data: "+e.message}
+};
+
 let pending=[];
 $("addBtn").onclick=()=>{
  const input=$("foodInput").value.trim();if(!input){$("parseStatus").textContent="Enter a food or meal first.";return}
